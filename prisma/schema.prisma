@@ -1,0 +1,94 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum RoomType {
+  DIRECT
+  GROUP
+}
+
+enum ParticipantRole {
+  OWNER
+  ADMIN
+  MEMBER
+}
+
+enum MessageType {
+  TEXT
+  FILE
+  SYSTEM
+}
+
+model User {
+  id           String    @id @default(uuid())
+  email        String    @unique
+  username     String    @unique
+  passwordHash String    @map("password_hash")
+  avatarUrl    String?   @map("avatar_url")
+  lastSeenAt   DateTime? @map("last_seen_at")
+  createdAt    DateTime  @default(now()) @map("created_at")
+  updatedAt    DateTime  @updatedAt @map("updated_at")
+
+  participants Participant[]
+  messages     Message[]
+  ownedRooms   Room[]        @relation("RoomCreator")
+
+  @@map("users")
+}
+
+model Room {
+  id        String   @id @default(uuid())
+  name      String? // null for DIRECT rooms
+  type      RoomType @default(GROUP)
+  creatorId String?  @map("creator_id")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  creator      User?         @relation("RoomCreator", fields: [creatorId], references: [id], onDelete: SetNull)
+  participants Participant[]
+  messages     Message[]
+
+  @@map("rooms")
+}
+
+model Participant {
+  id         String          @id @default(uuid())
+  userId     String          @map("user_id")
+  roomId     String          @map("room_id")
+  role       ParticipantRole @default(MEMBER)
+  joinedAt   DateTime        @default(now()) @map("joined_at")
+  lastReadAt DateTime?       @map("last_read_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  room Room @relation(fields: [roomId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, roomId])
+  @@index([roomId])
+  @@map("participants")
+}
+
+model Message {
+  id        String      @id @default(uuid())
+  roomId    String      @map("room_id")
+  senderId  String?     @map("sender_id")
+  type      MessageType @default(TEXT)
+  content   String? // text body; null for pure file messages
+  fileUrl   String?     @map("file_url") // storage object key
+  fileName  String?     @map("file_name")
+  fileSize  Int?        @map("file_size")
+  mimeType  String?     @map("mime_type")
+  createdAt DateTime    @default(now()) @map("created_at")
+  editedAt  DateTime?   @map("edited_at")
+  deletedAt DateTime?   @map("deleted_at") // soft delete
+
+  room   Room  @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  sender User? @relation(fields: [senderId], references: [id], onDelete: SetNull)
+
+  @@index([roomId, createdAt(sort: Desc)])
+  @@map("messages")
+}
