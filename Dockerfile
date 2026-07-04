@@ -18,6 +18,7 @@ COPY package*.json ./
 COPY prisma ./prisma
 RUN npm ci --omit=dev && npx prisma generate && npm cache clean --force
 COPY --from=build /app/dist ./dist
+COPY public ./public
 EXPOSE 4000
 # API server by default; workers run the same image with: node dist/queues/workers/index.js
 CMD ["sh", "-c", "npx prisma migrate deploy && node dist/server.js"]

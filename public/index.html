@@ -1,0 +1,317 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chat</title>
+<style>
+  * { box-sizing: border-box; margin: 0; }
+  body { font-family: system-ui, sans-serif; background: #0f1420; color: #e6e9f0; height: 100vh; }
+  button { cursor: pointer; border: none; border-radius: 8px; font-size: 14px; }
+  input { border: 1px solid #2a3350; background: #161d2e; color: #e6e9f0; border-radius: 8px; padding: 10px 12px; font-size: 14px; outline: none; }
+  input:focus { border-color: #5b7cfa; }
+
+  /* auth screen */
+  #auth { display: flex; align-items: center; justify-content: center; height: 100vh; }
+  #auth form { background: #161d2e; padding: 32px; border-radius: 16px; width: 320px; display: flex; flex-direction: column; gap: 12px; }
+  #auth h1 { font-size: 20px; margin-bottom: 8px; }
+  #auth button[type=submit] { background: #5b7cfa; color: white; padding: 11px; font-weight: 600; }
+  #auth .switch { background: none; color: #8fa3d0; font-size: 13px; }
+  #authError { color: #ff7b7b; font-size: 13px; min-height: 16px; }
+
+  /* app layout */
+  #app { display: none; height: 100vh; grid-template-columns: 280px 1fr; }
+  #sidebar { background: #131a2a; border-right: 1px solid #222c47; display: flex; flex-direction: column; }
+  #sidebar header { padding: 14px; border-bottom: 1px solid #222c47; display: flex; justify-content: space-between; align-items: center; }
+  #sidebar header b { font-size: 15px; }
+  #logout { background: none; color: #8fa3d0; font-size: 12px; }
+  #searchBox { padding: 10px; position: relative; }
+  #searchBox input { width: 100%; }
+  #searchResults { position: absolute; left: 10px; right: 10px; top: 54px; background: #1c2540; border-radius: 8px; z-index: 5; overflow: hidden; }
+  #searchResults div { padding: 10px 12px; cursor: pointer; font-size: 14px; }
+  #searchResults div:hover { background: #2a3350; }
+  #roomList { overflow-y: auto; flex: 1; }
+  .room { padding: 12px 14px; cursor: pointer; border-bottom: 1px solid #1a2338; }
+  .room:hover, .room.active { background: #1c2540; }
+  .room .name { font-weight: 600; font-size: 14px; display: flex; align-items: center; gap: 6px; }
+  .room .preview { font-size: 12px; color: #8fa3d0; margin-top: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: #3a4666; display: inline-block; }
+  .dot.on { background: #4ade80; }
+
+  /* chat pane */
+  #chat { display: flex; flex-direction: column; height: 100vh; }
+  #chatHeader { padding: 14px 18px; border-bottom: 1px solid #222c47; font-weight: 600; min-height: 52px; }
+  #typing { font-size: 12px; color: #8fa3d0; font-weight: 400; }
+  #messages { flex: 1; overflow-y: auto; padding: 18px; display: flex; flex-direction: column; gap: 10px; }
+  .msg { max-width: 65%; padding: 9px 13px; border-radius: 14px; background: #1c2540; align-self: flex-start; font-size: 14px; }
+  .msg.mine { background: #3b5bdb; align-self: flex-end; }
+  .msg .who { font-size: 11px; color: #9db2e0; margin-bottom: 3px; }
+  .msg.mine .who { color: #c7d4ff; }
+  .msg a { color: #9cc2ff; }
+  #composer { display: flex; gap: 8px; padding: 12px; border-top: 1px solid #222c47; }
+  #msgInput { flex: 1; }
+  #sendBtn { background: #5b7cfa; color: white; padding: 0 20px; font-weight: 600; }
+  #fileBtn { background: #222c47; color: #e6e9f0; padding: 0 14px; }
+  #empty { flex: 1; display: flex; align-items: center; justify-content: center; color: #4a5878; }
+</style>
+</head>
+<body>
+
+<div id="auth">
+  <form id="authForm">
+    <h1 id="authTitle">Log in</h1>
+    <input id="email" type="email" placeholder="Email" required>
+    <input id="username" type="text" placeholder="Username" style="display:none">
+    <input id="password" type="password" placeholder="Password" required>
+    <div id="authError"></div>
+    <button type="submit" id="authSubmit">Log in</button>
+    <button type="button" class="switch" id="authSwitch">No account? Register</button>
+  </form>
+</div>
+
+<div id="app">
+  <div id="sidebar">
+    <header><b id="myName"></b><button id="logout">log out</button></header>
+    <div id="searchBox">
+      <input id="userSearch" placeholder="Find user to chat with…" autocomplete="off">
+      <div id="searchResults"></div>
+    </div>
+    <div id="roomList"></div>
+  </div>
+  <div id="chat">
+    <div id="chatHeader">Select a chat</div>
+    <div id="empty">Search for a user to start chatting</div>
+    <div id="messages" style="display:none"></div>
+    <div id="composer" style="display:none">
+      <input type="file" id="fileInput" hidden>
+      <button id="fileBtn" title="Send a file">📎</button>
+      <input id="msgInput" placeholder="Type a message…" autocomplete="off">
+      <button id="sendBtn">Send</button>
+    </div>
+  </div>
+</div>
+
+<script src="/socket.io/socket.io.js"></script>
+<script>
+const $ = (id) => document.getElementById(id);
+let me = null, socket = null, rooms = [], currentRoom = null;
+const online = new Set();
+
+// ---------- API helper with auto-refresh ----------
+async function api(path, opts = {}, retry = true) {
+  const res = await fetch(path, {
+    ...opts,
+    headers: { "Content-Type": "application/json", Authorization: "Bearer " + localStorage.accessToken, ...(opts.headers || {}) },
+  });
+  if (res.status === 401 && retry && localStorage.refreshToken) {
+    const r = await fetch("/api/auth/refresh", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ refreshToken: localStorage.refreshToken }) });
+    if (r.ok) { const t = await r.json(); localStorage.accessToken = t.accessToken; localStorage.refreshToken = t.refreshToken; return api(path, opts, false); }
+    return logout();
+  }
+  const json = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(json.error || res.status);
+  return json;
+}
+
+// ---------- auth screen ----------
+let registering = false;
+$("authSwitch").onclick = () => {
+  registering = !registering;
+  $("authTitle").textContent = registering ? "Register" : "Log in";
+  $("authSubmit").textContent = registering ? "Register" : "Log in";
+  $("authSwitch").textContent = registering ? "Have an account? Log in" : "No account? Register";
+  $("username").style.display = registering ? "" : "none";
+  $("username").required = registering;
+};
+$("authForm").onsubmit = async (e) => {
+  e.preventDefault();
+  $("authError").textContent = "";
+  try {
+    const body = { email: $("email").value, password: $("password").value };
+    if (registering) body.username = $("username").value;
+    const res = await fetch("/api/auth/" + (registering ? "register" : "login"), {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+    });
+    const json = await res.json();
+    if (!res.ok) throw new Error(json.error || "Failed");
+    localStorage.accessToken = json.accessToken;
+    localStorage.refreshToken = json.refreshToken;
+    localStorage.me = JSON.stringify(json.user);
+    start(json.user);
+  } catch (err) { $("authError").textContent = err.message; }
+};
+
+function logout() {
+  localStorage.clear();
+  if (socket) socket.disconnect();
+  location.reload();
+}
+$("logout").onclick = logout;
+
+// ---------- main app ----------
+async function start(user) {
+  me = user;
+  $("auth").style.display = "none";
+  $("app").style.display = "grid";
+  $("myName").textContent = "@" + me.username;
+  connectSocket();
+  await loadRooms();
+}
+
+function connectSocket() {
+  socket = io({ auth: { token: localStorage.accessToken } });
+  socket.on("connect_error", async () => { // token likely expired → refresh and retry
+    await api("/api/auth/me").catch(() => {});
+    socket.auth.token = localStorage.accessToken;
+    socket.connect();
+  });
+  socket.on("message:new", (m) => {
+    if (currentRoom && m.roomId === currentRoom.id) appendMessage(m);
+    loadRooms();
+  });
+  socket.on("presence:online", ({ userId }) => { online.add(userId); renderRooms(); });
+  socket.on("presence:offline", ({ userId }) => { online.delete(userId); renderRooms(); });
+  socket.on("typing:start", ({ roomId, username }) => {
+    if (currentRoom && roomId === currentRoom.id) $("typing").textContent = username + " is typing…";
+  });
+  socket.on("typing:stop", ({ roomId }) => {
+    if (currentRoom && roomId === currentRoom.id) $("typing").textContent = "";
+  });
+}
+
+function roomName(room) {
+  if (room.type === "GROUP") return room.name;
+  const other = room.participants.find((p) => p.user.id !== me.id);
+  return other ? "@" + other.user.username : "(just you)";
+}
+function otherUserId(room) {
+  const other = room.participants.find((p) => p.user.id !== me.id);
+  return other ? other.user.id : null;
+}
+
+async function loadRooms() {
+  rooms = await api("/api/rooms");
+  const ids = rooms.map(otherUserId).filter(Boolean);
+  if (ids.length && socket?.connected) {
+    socket.emit("presence:who", { userIds: ids }, ({ online: on }) => {
+      online.clear(); on.forEach((id) => online.add(id)); renderRooms();
+    });
+  } else renderRooms();
+}
+
+function renderRooms() {
+  $("roomList").innerHTML = "";
+  for (const room of rooms) {
+    const div = document.createElement("div");
+    div.className = "room" + (currentRoom?.id === room.id ? " active" : "");
+    const last = room.messages?.[0];
+    const preview = last ? (last.type === "FILE" ? "📎 " + (last.fileName || "file") : last.content || "") : "no messages yet";
+    const uid = otherUserId(room);
+    div.innerHTML = `<div class="name">${room.type === "DIRECT" ? `<span class="dot${online.has(uid) ? " on" : ""}"></span>` : ""}${escapeHtml(roomName(room))}</div><div class="preview">${escapeHtml(preview)}</div>`;
+    div.onclick = () => openRoom(room);
+    $("roomList").appendChild(div);
+  }
+}
+
+async function openRoom(room) {
+  currentRoom = room;
+  renderRooms();
+  $("chatHeader").innerHTML = escapeHtml(roomName(room)) + ' <span id="typing"></span>';
+  $("empty").style.display = "none";
+  $("messages").style.display = "flex";
+  $("composer").style.display = "flex";
+  $("messages").innerHTML = "";
+  const { messages } = await api(`/api/rooms/${room.id}/messages`);
+  messages.reverse().forEach(appendMessage);
+  socket.emit("message:read", { roomId: room.id });
+}
+
+function appendMessage(m) {
+  const div = document.createElement("div");
+  div.className = "msg" + (m.sender?.id === me.id ? " mine" : "");
+  let body = m.type === "FILE"
+    ? `📎 <a href="#" onclick="downloadFile('${m.id}');return false">${escapeHtml(m.fileName || "file")}</a>` + (m.content ? "<br>" + escapeHtml(m.content) : "")
+    : escapeHtml(m.content || "");
+  div.innerHTML = `<div class="who">${escapeHtml(m.sender?.username || "?")}</div>${body}`;
+  $("messages").appendChild(div);
+  $("messages").scrollTop = $("messages").scrollHeight;
+}
+
+async function downloadFile(messageId) {
+  const { downloadUrl } = await api(`/api/files/${messageId}/download`);
+  window.open(downloadUrl, "_blank");
+}
+
+// ---------- sending ----------
+function send() {
+  const content = $("msgInput").value.trim();
+  if (!content || !currentRoom) return;
+  $("msgInput").value = "";
+  socket.emit("message:send", { roomId: currentRoom.id, content }, (res) => {
+    if (!res.ok) alert("Send failed: " + res.error);
+  });
+  socket.emit("typing:stop", { roomId: currentRoom.id });
+}
+$("sendBtn").onclick = send;
+let typingTimer = null;
+$("msgInput").onkeydown = (e) => { if (e.key === "Enter") send(); };
+$("msgInput").oninput = () => {
+  if (!currentRoom) return;
+  socket.emit("typing:start", { roomId: currentRoom.id });
+  clearTimeout(typingTimer);
+  typingTimer = setTimeout(() => socket.emit("typing:stop", { roomId: currentRoom.id }), 1500);
+};
+
+// ---------- file upload ----------
+$("fileBtn").onclick = () => $("fileInput").click();
+$("fileInput").onchange = async () => {
+  const file = $("fileInput").files[0];
+  if (!file || !currentRoom) return;
+  $("fileBtn").textContent = "⏳";
+  try {
+    const presign = await api("/api/files/presign", {
+      method: "POST",
+      body: JSON.stringify({ roomId: currentRoom.id, fileName: file.name, mimeType: file.type || "application/octet-stream", fileSize: file.size }),
+    });
+    const put = await fetch(presign.uploadUrl, { method: "PUT", headers: { "Content-Type": file.type || "application/octet-stream" }, body: file });
+    if (!put.ok) throw new Error("upload failed");
+    await api("/api/files/complete", { method: "POST", body: JSON.stringify({ roomId: currentRoom.id, key: presign.key }) });
+  } catch (err) { alert("File upload failed: " + err.message); }
+  $("fileBtn").textContent = "📎";
+  $("fileInput").value = "";
+};
+
+// ---------- user search → start DM ----------
+let searchTimer = null;
+$("userSearch").oninput = () => {
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(async () => {
+    const q = $("userSearch").value.trim();
+    $("searchResults").innerHTML = "";
+    if (q.length < 2) return;
+    const users = await api("/api/users/search?q=" + encodeURIComponent(q));
+    for (const u of users) {
+      const div = document.createElement("div");
+      div.textContent = "@" + u.username;
+      div.onclick = async () => {
+        $("searchResults").innerHTML = ""; $("userSearch").value = "";
+        const room = await api("/api/rooms", { method: "POST", body: JSON.stringify({ type: "DIRECT", participantIds: [u.id] }) });
+        await loadRooms();
+        openRoom(rooms.find((r) => r.id === room.id) || room);
+      };
+      $("searchResults").appendChild(div);
+    }
+  }, 300);
+};
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+// ---------- boot ----------
+if (localStorage.accessToken && localStorage.me) {
+  api("/api/auth/me").then((u) => start(u)).catch(() => localStorage.clear());
+}
+</script>
+</body>
+</html>
